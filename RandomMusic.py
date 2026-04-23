@@ -43,27 +43,42 @@ def find_local_artwork(track_path):
                     for tag in audio.tags.values():
                         if tag.__class__.__name__ == 'APIC': return tag.data
                 if 'covr' in audio: return audio['covr'][0]
-        except Exception: pass 
+        except Exception as e:
+            print(f"Errore nella ricerca della copertina: {e}")
     return None
 
 def fetch_artwork_from_api(album, artist):
+    """Cerca la copertina con logica di fallback per aumentare la probabilità di successo."""
     print("☁️ Cerco la copertina sui server Apple...")
-    query = f"{album} {artist}"
-    url = f"https://itunes.apple.com/search?term={urllib.parse.quote(query)}&entity=album&limit=1"
-    print (f"🔗 URL API: {url}")
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode())
-            if data['resultCount'] > 0:
-                img_url = data['results'][0]['artworkUrl100'].replace('100x100bb', '600x600bb')
-                with urllib.request.urlopen(img_url) as img_response:
-                    return img_response.read()
-    except Exception as e: pass
+    
+    # Pulizia base: a volte "(Deluxe)" rovina la ricerca
+    clean_album = album.split(' (')[0].split(' - EP')[0]
+    
+    # 1. Prova ricerca molto specifica (Album + Artista) sullo store IT
+    queries = [
+        f"{clean_album} {artist}",
+        clean_album # 2. Fallback: cerca solo il nome dell'album
+    ]
+    
+    for query in queries:
+        url = f"https://itunes.apple.com/search?term={urllib.parse.quote(query)}&entity=album&limit=1&country=it"
+        print(f"URL di ricerca: {url}")
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                if data['resultCount'] > 0:
+                    img_url = data['results'][0]['artworkUrl100'].replace('100x100bb', '600x600bb')
+                    with urllib.request.urlopen(img_url) as img_response:
+                        return img_response.read()
+        except Exception as e:
+            print(f"Errore nella ricerca della copertina: {e}")
+            continue # Se fallisce, prova la query successiva
+            
     return None
 
-def main(xml_file_path, min_official, min_saved):
-    print(f"Lettura della libreria di iTunes in corso... (Filtri: >= {min_official} tracce ufficiali, >= {min_saved} salvate)\n")
+def main(xml_file_path, min_official, min_saved, min_favs):
+    print(f"Lettura in corso... (Filtri: >= {min_official} ufficiali, >= {min_saved} salvate, >= {min_favs} preferite)\n")
     try:
         with open(xml_file_path, 'rb') as f:
             data = plistlib.load(f)
@@ -74,7 +89,6 @@ def main(xml_file_path, min_official, min_saved):
     tracks = data.get("Tracks", {})
     if not tracks: return
 
-    # Raggruppa le tracce per Album
     albums = {}
     for track_id, track_info in tracks.items():
         album_name = track_info.get("Album")
@@ -86,34 +100,36 @@ def main(xml_file_path, min_official, min_saved):
             albums[key] = []
         albums[key].append(track_info)
 
-    # --- LOGICA DI FILTRAGGIO DINAMICA ---
     target_albums = {}
     for key, track_list in albums.items():
         official_track_count = track_list[0].get("Track Count", len(track_list))
         saved_track_count = len(track_list)
         
-        # Filtra usando i parametri passati da linea di comando
-        if official_track_count >= min_official and saved_track_count >= min_saved: 
+        # Conta quante tracce in questo album hanno la stella (Favorited) o il vecchio cuore (Loved)
+        fav_count = sum(1 for t in track_list if t.get("Favorited", False) or t.get("Loved", False))
+        
+        # Applica tutti i filtri
+        if official_track_count >= min_official and saved_track_count >= min_saved and fav_count >= min_favs: 
             target_albums[key] = track_list
 
     if not target_albums:
-        print(f"Non ho trovato nessun album con almeno {min_official} tracce ufficiali e {min_saved} salvate in libreria.")
+        print(f"Nessun album rispetta tutti i criteri inseriti.")
         return
 
-    # Scegli a caso tra quelli filtrati
     chosen_key = random.choice(list(target_albums.keys()))
     chosen_tracks = target_albums[chosen_key]
     album_name, artist_name = chosen_key
     
     official_count = chosen_tracks[0].get("Track Count", len(chosen_tracks))
-    saved_count = len(chosen_tracks)
+    fav_count_final = sum(1 for t in chosen_tracks if t.get("Favorited", False) or t.get("Loved", False))
     
-    print(f"🎵 Album selezionato: **{album_name}**")
+    print(f"🎵 Album: {album_name}")
     print(f"🎸 Artista: {artist_name}")
-    print(f"💿 Tracce Ufficiali: {official_count} (Minimo richiesto: {min_official})")
-    print(f"📥 Tracce Salvate: {saved_count} (Minimo richiesto: {min_saved})\n")
+    print(f"💿 Tracce Ufficiali: {official_count}")
+    print(f"📥 Tracce Salvate: {len(chosen_tracks)}")
+    print(f"⭐ Tracce Preferite: {fav_count_final}\n")
 
-    # Logica Copertina
+    # Copertina
     artwork_data = None
     for track in chosen_tracks:
         location = track.get("Location")
@@ -128,31 +144,18 @@ def main(xml_file_path, min_official, min_saved):
     if artwork_data:
         print_iterm_image(artwork_data)
     else:
-        print("❌ Impossibile recuperare la copertina.")
+        print("❌ Impossibile recuperare la copertina (titolo troppo strano per l'API di Apple).")
 
 if __name__ == "__main__":
-    # Imposta il parser degli argomenti da riga di comando
     parser = argparse.ArgumentParser(description="Estrai un album casuale dalla tua libreria iTunes.")
-    
-    # Argomento -t / --tracks
-    parser.add_argument("-t", "--tracks", type=int, default=1, 
-                        help="Numero minimo di tracce UFFICIALI che l'album deve avere (default: 1)")
-    
-    # Argomento -s / --saved
-    parser.add_argument("-s", "--saved", type=int, default=1, 
-                        help="Numero minimo di tracce SALVATE nella tua libreria per quell'album (default: 1)")
-    
-    parser.add_argument("-l", "--library", type=str, default="~/Music/Libreria.xml",
-                        help="Percorso del file XML della libreria iTunes (default: ~/Music/Libreria.xml)")
-    
+    parser.add_argument("-t", "--tracks", type=int, default=1, help="Minimo tracce ufficiali")
+    parser.add_argument("-s", "--saved", type=int, default=1, help="Minimo tracce salvate")
+    parser.add_argument("-f", "--favorites", type=int, default=0, help="Minimo tracce nei preferiti (Stella/Cuore)")
     args = parser.parse_args()
 
-    # Percorso del file XML (usando expanduser per gestire la tilde)
-    raw_path = args.library
-    ITUNES_XML_PATH = os.path.expanduser(raw_path)
+    ITUNES_XML_PATH = os.path.expanduser("~/Music/Libreria.xml")
     
     if not os.path.exists(ITUNES_XML_PATH):
-        print(f"Modifica lo script e inserisci il percorso corretto: {ITUNES_XML_PATH}")
+        print(f"Errore: File non trovato in {ITUNES_XML_PATH}")
     else:
-        # Passa i parametri presi dal terminale alla funzione principale
-        main(ITUNES_XML_PATH, args.tracks, args.saved)
+        main(ITUNES_XML_PATH, args.tracks, args.saved, args.favorites)
