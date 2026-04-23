@@ -38,6 +38,10 @@ Puoi usare i parametri per filtrare la selezione:
 ```
 ./RandomMusic.py -s 3
 ```
+- **Estrai album con almeno 5 preferiti:**
+```
+./RandomMusic.py -f 5  
+```
 - **Estrai album interi di cui possiedi la collezione completa:**
 ```
 ./RandomMusic.py -t 10 -s 10
