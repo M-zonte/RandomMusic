@@ -123,7 +123,7 @@ def main(xml_file_path, min_official, min_saved, min_favs):
     official_count = chosen_tracks[0].get("Track Count", len(chosen_tracks))
     fav_count_final = sum(1 for t in chosen_tracks if t.get("Favorited", False) or t.get("Loved", False))
 
-    print(f"Album Trovati:" {len(target_albums)})
+    print(f"Album Trovati: {len(target_albums)}")
     print(f"🎵 Album: {album_name}")
     print(f"🎸 Artista: {artist_name}")
     print(f"💿 Tracce Ufficiali: {official_count}")
